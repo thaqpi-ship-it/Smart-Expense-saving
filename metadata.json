@@ -1,0 +1,6 @@
+{
+  "name": "Smart Expense & Saving Tracker",
+  "description": "A modern, cute yet professional personal finance tracking web app with a sleek dark-green luxury theme, AI slip/receipt scanner, smart budgeting, and savings goals.",
+  "requestFramePermissions": ["camera", "microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
