@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   Category,
   FinancialRule,
@@ -16,6 +16,9 @@ import {
   loadStoredDateFilter,
   saveStoredDateFilter,
   parseDateParts,
+  loadTransactions,
+  loadCategories,
+  loadSavingsGoals,
 } from './utils/storage';
 import { db, auth } from './firebase.js';
 import {
@@ -24,7 +27,8 @@ import {
   setDoc,
   deleteDoc,
   onSnapshot,
-  getDocFromServer,
+  getDocs,
+  getDoc,
   writeBatch,
 } from 'firebase/firestore';
 import { onAuthStateChanged, signOut, User } from 'firebase/auth';
@@ -83,10 +87,14 @@ export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [authLoading, setAuthLoading] = useState<boolean>(true);
 
-  // User-Specific Data State
+  // Initial Multi-device Cloud Sync Loading State
+  // Stays true until initial snapshot from Firestore arrives for the authenticated user
+  const [isDataLoading, setIsDataLoading] = useState<boolean>(true);
+
+  // User-Specific Cloud Data State (pure from Firestore, no mock overwrite)
   const [transactions, setTransactions] = useState<Transaction[]>([]);
-  const [categories, setCategories] = useState<Category[]>(DEFAULT_CATEGORIES);
-  const [savingsGoals, setSavingsGoals] = useState<SavingsGoal[]>(DEFAULT_SAVINGS_GOALS);
+  const [categories, setCategories] = useState<Category[]>([]);
+  const [savingsGoals, setSavingsGoals] = useState<SavingsGoal[]>([]);
   const [savingsRecords, setSavingsRecords] = useState<SavingsRecord[]>([]);
   const [financialRule, setFinancialRule] = useState<FinancialRule>(DEFAULT_FINANCIAL_RULE);
   const [isCloudConnected, setIsCloudConnected] = useState<boolean>(false);
@@ -103,6 +111,9 @@ export default function App() {
     if (saved) return saved.month;
     return new Date().getMonth();
   });
+
+  // Track if user manually adjusted date filter in current session
+  const userAdjustedFilter = useRef<boolean>(false);
 
   // Active view tab
   const [activeTab, setActiveTab] = useState<string>('dashboard');
@@ -133,32 +144,98 @@ export default function App() {
     onConfirm: () => {},
   });
 
-  // Listen to Firebase Auth state
+  // 1. Listen to Firebase Auth state
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
       setUser(currentUser);
       setAuthLoading(false);
+      if (!currentUser) {
+        setIsDataLoading(false);
+        setTransactions([]);
+        setCategories([]);
+        setSavingsGoals([]);
+        setSavingsRecords([]);
+      }
     });
     return () => unsubscribe();
   }, []);
 
-  // Real-time Firebase Firestore Sync Listeners - Strictly Isolated per User (users/{userId}/...)
+  // 2. Real-time Multi-device Firebase Listeners (users/{userId}/...)
   useEffect(() => {
     if (!user) {
       setIsCloudConnected(false);
+      setIsDataLoading(false);
       return;
     }
 
     const uid = user.uid;
+    setIsDataLoading(true);
 
-    // Optional connection probe
-    try {
-      getDocFromServer(doc(db, 'users', uid)).catch(() => {});
-    } catch {
-      // ignore
-    }
+    // Track loaded sections to dismiss loading screen once initial sync is complete
+    const loadedSections = {
+      transactions: false,
+      categories: false,
+      goals: false,
+      records: false,
+      rule: false,
+    };
 
-    // 1. Transactions Listener for current user
+    const checkAllLoaded = () => {
+      if (
+        loadedSections.transactions &&
+        loadedSections.categories &&
+        loadedSections.goals &&
+        loadedSections.records &&
+        loadedSections.rule
+      ) {
+        setIsDataLoading(false);
+      }
+    };
+
+    // Safety timeout: ensure loading state is dismissed within 4 seconds even on slow networks
+    const loadTimeout = setTimeout(() => {
+      setIsDataLoading(false);
+    }, 4000);
+
+    // One-time legacy data migration check:
+    // If user has local storage data from Machine A or legacy root transactions, migrate to users/{uid}
+    const runMigrationIfNeeded = async () => {
+      try {
+        const localTxs = loadTransactions();
+        if (localTxs && localTxs.length > 0) {
+          for (const tx of localTxs) {
+            const txRef = doc(db, 'users', uid, 'transactions', tx.id);
+            await setDoc(txRef, cleanForFirestore({ ...tx, userId: uid }), { merge: true });
+          }
+        }
+
+        // Check root collection 'transactions'
+        try {
+          const rootSnap = await getDocs(collection(db, 'transactions'));
+          if (!rootSnap.empty) {
+            for (const docSnap of rootSnap.docs) {
+              const data = docSnap.data() as Transaction;
+              if (!data.userId || data.userId === uid) {
+                const txRef = doc(db, 'users', uid, 'transactions', data.id || docSnap.id);
+                await setDoc(
+                  txRef,
+                  cleanForFirestore({ ...data, id: data.id || docSnap.id, userId: uid }),
+                  { merge: true }
+                );
+              }
+            }
+          }
+        } catch {
+          // ignore if root collection is restricted
+        }
+      } catch (err) {
+        console.debug('Migration note:', err);
+      }
+    };
+
+    runMigrationIfNeeded();
+
+    // 1. Transactions Real-time Listener
     const unsubTxs = onSnapshot(
       collection(db, 'users', uid, 'transactions'),
       (snapshot) => {
@@ -171,64 +248,113 @@ export default function App() {
         });
         setTransactions(list);
 
-        // Auto adjust date filter to newest transaction if initial year/month is current
-        if (list.length > 0 && selectedYear === -1) {
-          const { year, month } = parseDateParts(list[0].date);
-          setSelectedYear(year);
-          setSelectedMonth(month);
-          saveStoredDateFilter(year, month);
+        // Smart Date Filter Multi-Device Auto-Alignment:
+        // If current month selection has 0 transactions, but user has transactions in another month/year
+        // auto-adjust date filter to the newest transaction so user immediately sees their data on a new machine!
+        if (!userAdjustedFilter.current && list.length > 0) {
+          const currentMonthHasTxs = list.some((tx) => {
+            const { year, month } = parseDateParts(tx.date);
+            return year === selectedYear && month === selectedMonth;
+          });
+
+          if (!currentMonthHasTxs) {
+            const { year, month } = parseDateParts(list[0].date);
+            setSelectedYear(year);
+            setSelectedMonth(month);
+            saveStoredDateFilter(year, month);
+          }
         }
+
+        loadedSections.transactions = true;
+        checkAllLoaded();
       },
-      (err) => handleFirestoreError(err, OperationType.LIST, `users/${uid}/transactions`)
+      (err) => {
+        handleFirestoreError(err, OperationType.LIST, `users/${uid}/transactions`);
+        loadedSections.transactions = true;
+        checkAllLoaded();
+      }
     );
 
-    // 2. Categories Listener for current user
+    // 2. Categories Real-time Listener (Guarded against overwriting cloud data)
     const unsubCats = onSnapshot(
       collection(db, 'users', uid, 'categories'),
+      { includeMetadataChanges: true },
       (snapshot) => {
         setIsCloudConnected(true);
         if (!snapshot.empty) {
           const list = snapshot.docs.map((d) => d.data() as Category);
           setCategories(list);
-        } else {
-          // Initialize default categories scoped to this new user
+          loadedSections.categories = true;
+          checkAllLoaded();
+        } else if (!snapshot.metadata.fromCache) {
+          // ONLY if the SERVER confirms this new user has no categories at all
+          // Initialize default categories with batch
           const batch = writeBatch(db);
           DEFAULT_CATEGORIES.forEach((cat) => {
             const catRef = doc(db, 'users', uid, 'categories', cat.id);
             batch.set(catRef, cleanForFirestore({ ...cat, userId: uid }));
           });
-          batch.commit().catch((err) =>
-            handleFirestoreError(err, OperationType.WRITE, `users/${uid}/categories`)
-          );
+          batch
+            .commit()
+            .then(() => {
+              setCategories(DEFAULT_CATEGORIES.map((c) => ({ ...c, userId: uid })));
+            })
+            .catch((err) =>
+              handleFirestoreError(err, OperationType.WRITE, `users/${uid}/categories`)
+            )
+            .finally(() => {
+              loadedSections.categories = true;
+              checkAllLoaded();
+            });
         }
       },
-      (err) => handleFirestoreError(err, OperationType.LIST, `users/${uid}/categories`)
+      (err) => {
+        handleFirestoreError(err, OperationType.LIST, `users/${uid}/categories`);
+        loadedSections.categories = true;
+        checkAllLoaded();
+      }
     );
 
-    // 3. Savings Goals Listener for current user
+    // 3. Savings Goals Real-time Listener (Guarded against overwriting cloud data)
     const unsubGoals = onSnapshot(
       collection(db, 'users', uid, 'savingsGoals'),
+      { includeMetadataChanges: true },
       (snapshot) => {
         setIsCloudConnected(true);
         if (!snapshot.empty) {
           const list = snapshot.docs.map((d) => d.data() as SavingsGoal);
           setSavingsGoals(list);
-        } else {
-          // Initialize default goals scoped to this new user
+          loadedSections.goals = true;
+          checkAllLoaded();
+        } else if (!snapshot.metadata.fromCache) {
+          // ONLY if the SERVER confirms this new user has 0 goals
           const batch = writeBatch(db);
           DEFAULT_SAVINGS_GOALS.forEach((g) => {
             const goalRef = doc(db, 'users', uid, 'savingsGoals', g.id);
             batch.set(goalRef, cleanForFirestore({ ...g, userId: uid }));
           });
-          batch.commit().catch((err) =>
-            handleFirestoreError(err, OperationType.WRITE, `users/${uid}/savingsGoals`)
-          );
+          batch
+            .commit()
+            .then(() => {
+              setSavingsGoals(DEFAULT_SAVINGS_GOALS.map((g) => ({ ...g, userId: uid })));
+            })
+            .catch((err) =>
+              handleFirestoreError(err, OperationType.WRITE, `users/${uid}/savingsGoals`)
+            )
+            .finally(() => {
+              loadedSections.goals = true;
+              checkAllLoaded();
+            });
         }
       },
-      (err) => handleFirestoreError(err, OperationType.LIST, `users/${uid}/savingsGoals`)
+      (err) => {
+        handleFirestoreError(err, OperationType.LIST, `users/${uid}/savingsGoals`);
+        loadedSections.goals = true;
+        checkAllLoaded();
+      }
     );
 
-    // 4. Savings Records Listener for current user
+    // 4. Savings Records Real-time Listener
     const unsubRecords = onSnapshot(
       collection(db, 'users', uid, 'savingsRecords'),
       (snapshot) => {
@@ -236,19 +362,27 @@ export default function App() {
         const list = snapshot.docs.map((d) => d.data() as SavingsRecord);
         list.sort((a, b) => b.createdAt - a.createdAt);
         setSavingsRecords(list);
+        loadedSections.records = true;
+        checkAllLoaded();
       },
-      (err) => handleFirestoreError(err, OperationType.LIST, `users/${uid}/savingsRecords`)
+      (err) => {
+        handleFirestoreError(err, OperationType.LIST, `users/${uid}/savingsRecords`);
+        loadedSections.records = true;
+        checkAllLoaded();
+      }
     );
 
-    // 5. Financial Rule Listener for current user
+    // 5. Financial Rule Real-time Listener
     const unsubRule = onSnapshot(
       doc(db, 'users', uid, 'settings', 'financialRule'),
+      { includeMetadataChanges: true },
       (docSnap) => {
         setIsCloudConnected(true);
+        const fromCache = docSnap.metadata?.fromCache ?? false;
         if (docSnap.exists()) {
           const rule = docSnap.data() as FinancialRule;
           setFinancialRule(rule);
-        } else {
+        } else if (!fromCache) {
           const defaultRule = { ...DEFAULT_FINANCIAL_RULE, userId: uid };
           setDoc(
             doc(db, 'users', uid, 'settings', 'financialRule'),
@@ -257,11 +391,18 @@ export default function App() {
             handleFirestoreError(err, OperationType.WRITE, `users/${uid}/settings/financialRule`)
           );
         }
+        loadedSections.rule = true;
+        checkAllLoaded();
       },
-      (err) => handleFirestoreError(err, OperationType.GET, `users/${uid}/settings/financialRule`)
+      (err) => {
+        handleFirestoreError(err, OperationType.GET, `users/${uid}/settings/financialRule`);
+        loadedSections.rule = true;
+        checkAllLoaded();
+      }
     );
 
     return () => {
+      clearTimeout(loadTimeout);
       unsubTxs();
       unsubCats();
       unsubGoals();
@@ -314,22 +455,25 @@ export default function App() {
     try {
       await signOut(auth);
       setTransactions([]);
-      setCategories(DEFAULT_CATEGORIES);
-      setSavingsGoals(DEFAULT_SAVINGS_GOALS);
+      setCategories([]);
+      setSavingsGoals([]);
       setSavingsRecords([]);
       setFinancialRule(DEFAULT_FINANCIAL_RULE);
       setIsCloudConnected(false);
+      userAdjustedFilter.current = false;
     } catch (err) {
       console.error('Logout error:', err);
     }
   };
 
   const handleYearChange = (year: number) => {
+    userAdjustedFilter.current = true;
     setSelectedYear(year);
     saveStoredDateFilter(year, selectedMonth);
   };
 
   const handleMonthChange = (month: number) => {
+    userAdjustedFilter.current = true;
     setSelectedMonth(month);
     saveStoredDateFilter(selectedYear, month);
   };
@@ -888,7 +1032,7 @@ export default function App() {
     setDeleteModalState({
       isOpen: true,
       title: 'รีเซ็ตข้อมูลส่วนตัวทั้งหมด',
-      message: 'ต้องการกู้คืนข้อมูลรายการบันทึก งบประมาณ หมวดหมู่ และกระปุกออมเงินของบัญชีคุณกลับสู่สถานะเริ่มต้นหรือไม่?',
+      message: 'ต้องการกู้คืนข้อมูลรายการบันทึก งบประมาณ หมวดหมู่ และกระปุกออมเงินของบัญชีคุณกลับสู่สถานะเริ่มต้นหรือไม่? ข้อมูลทั้งหมดบน Firebase Cloud จะถูกรีเซ็ต',
       onConfirm: () => {
         // Clear this user's transactions & records in Firestore
         transactions.forEach((tx) => {
@@ -911,8 +1055,8 @@ export default function App() {
         ).catch(() => {});
 
         setTransactions([]);
-        setCategories(DEFAULT_CATEGORIES);
-        setSavingsGoals(DEFAULT_SAVINGS_GOALS);
+        setCategories(DEFAULT_CATEGORIES.map((c) => ({ ...c, userId: uid })));
+        setSavingsGoals(DEFAULT_SAVINGS_GOALS.map((g) => ({ ...g, userId: uid })));
         setSavingsRecords([]);
         setFinancialRule(DEFAULT_FINANCIAL_RULE);
       },
@@ -954,7 +1098,27 @@ export default function App() {
     return <AuthScreen />;
   }
 
-  // 3. Authenticated Dashboard with User-Specific Isolated Data
+  // 3. Multi-device Cloud Sync Loading Splash: Waits until initial data from Cloud is fetched
+  if (isDataLoading) {
+    return (
+      <div className="min-h-screen bg-[#14171c] flex flex-col items-center justify-center text-slate-100 selection:bg-emerald-500/30 selection:text-emerald-300">
+        <div className="w-14 h-14 rounded-2xl bg-gradient-to-tr from-emerald-500 via-emerald-400 to-teal-300 p-0.5 shadow-2xl shadow-emerald-950/70 mb-4">
+          <div className="w-full h-full bg-[#181d24] rounded-[14px] flex items-center justify-center">
+            <Wallet className="w-7 h-7 text-emerald-400" />
+          </div>
+        </div>
+        <div className="flex items-center gap-2.5 text-sm font-semibold text-slate-200">
+          <span className="w-4 h-4 border-2 border-emerald-400 border-t-transparent rounded-full animate-spin" />
+          <span>กำลังเชื่อมต่อและซิงค์ข้อมูลจาก Firebase Cloud...</span>
+        </div>
+        <span className="text-xs text-emerald-400/80 mt-1.5 font-medium">
+          ระบบ Real-time Multi-Device Sync สำหรับ {user.email || 'ผู้ใช้งาน'}
+        </span>
+      </div>
+    );
+  }
+
+  // 4. Authenticated Dashboard with User-Specific Isolated Data
   return (
     <div className="min-h-screen bg-[#181b20] text-slate-100 flex selection:bg-emerald-500/30 selection:text-emerald-300">
       {/* Sidebar Navigation */}
