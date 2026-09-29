@@ -27,6 +27,7 @@ interface NavbarProps {
   onResetData: () => void;
   currentNetBalance: number;
   onToggleSidebar?: () => void;
+  isCloudConnected?: boolean;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
@@ -40,6 +41,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   onResetData,
   currentNetBalance,
   onToggleSidebar,
+  isCloudConnected,
 }) => {
   const navTabs = [
     { id: 'dashboard', label: 'ภาพรวม', icon: LayoutDashboard },
@@ -84,7 +86,14 @@ export const Navbar: React.FC<NavbarProps> = ({
                   ยอดสุทธิ: ฿{currentNetBalance.toLocaleString('en-US', { minimumFractionDigits: 2 })}
                 </span>
                 <span className="text-slate-500">•</span>
-                <span className="text-slate-400">ธีม Dark Gray & Mint Green</span>
+                {isCloudConnected ? (
+                  <span className="inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                    <span>Firebase Cloud (db)</span>
+                  </span>
+                ) : (
+                  <span className="text-slate-400">ธีม Dark Gray & Mint Green</span>
+                )}
               </div>
             </div>
           </div>

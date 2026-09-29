@@ -1,0 +1,103 @@
+{
+  "entities": {
+    "Transaction": {
+      "title": "Transaction",
+      "description": "Financial income, expense, or savings transaction",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "date": { "type": "string" },
+        "amount": { "type": "number" },
+        "categoryId": { "type": "string" },
+        "type": { "type": "string", "enum": ["expense", "income", "savings"] },
+        "merchant": { "type": "string" },
+        "notes": { "type": "string" },
+        "goalId": { "type": "string" },
+        "savingsRecordId": { "type": "string" },
+        "createdAt": { "type": "number" }
+      },
+      "required": ["id", "date", "amount", "categoryId", "type", "createdAt"]
+    },
+    "Category": {
+      "title": "Category",
+      "description": "Budget category for expenses, income, or savings",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "type": { "type": "string", "enum": ["expense", "income", "savings"] },
+        "icon": { "type": "string" },
+        "color": { "type": "string" },
+        "isHappiness": { "type": "boolean" },
+        "budgetMonthly": { "type": "number" }
+      },
+      "required": ["id", "name", "type", "icon", "color"]
+    },
+    "SavingsGoal": {
+      "title": "SavingsGoal",
+      "description": "Savings target piggybank goal",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "targetAmount": { "type": "number" },
+        "currentAmount": { "type": "number" },
+        "targetDate": { "type": "string" },
+        "icon": { "type": "string" },
+        "color": { "type": "string" },
+        "notes": { "type": "string" }
+      },
+      "required": ["id", "title", "targetAmount", "currentAmount", "icon", "color"]
+    },
+    "SavingsRecord": {
+      "title": "SavingsRecord",
+      "description": "Savings deposit or withdrawal log",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "goalId": { "type": "string" },
+        "type": { "type": "string", "enum": ["deposit", "withdraw"] },
+        "amount": { "type": "number" },
+        "date": { "type": "string" },
+        "notes": { "type": "string" },
+        "transactionId": { "type": "string" },
+        "createdAt": { "type": "number" }
+      },
+      "required": ["id", "goalId", "type", "amount", "date", "createdAt"]
+    },
+    "FinancialRule": {
+      "title": "FinancialRule",
+      "description": "50/30/20 or custom financial allocation rule",
+      "type": "object",
+      "properties": {
+        "needsPercent": { "type": "number" },
+        "wantsPercent": { "type": "number" },
+        "savingsPercent": { "type": "number" },
+        "name": { "type": "string" }
+      },
+      "required": ["needsPercent", "wantsPercent", "savingsPercent"]
+    }
+  },
+  "firestore": {
+    "/transactions/{txId}": {
+      "schema": "Transaction",
+      "description": "User transactions"
+    },
+    "/categories/{catId}": {
+      "schema": "Category",
+      "description": "User budget and tracking categories"
+    },
+    "/savingsGoals/{goalId}": {
+      "schema": "SavingsGoal",
+      "description": "User savings goals"
+    },
+    "/savingsRecords/{recId}": {
+      "schema": "SavingsRecord",
+      "description": "User savings deposit and withdrawal log"
+    },
+    "/settings/{settingId}": {
+      "schema": "FinancialRule",
+      "description": "Application settings including financial rules"
+    }
+  }
+}

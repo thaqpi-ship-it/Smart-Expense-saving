@@ -1,5 +1,17 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { Category, FinancialRule, SavingsGoal, SavingsRecord, Transaction, TransactionType } from './types';
+import {
+  Category,
+  FinancialRule,
+  SavingsGoal,
+  SavingsRecord,
+  Transaction,
+  TransactionType,
+} from './types';
+import {
+  DEFAULT_CATEGORIES,
+  DEFAULT_FINANCIAL_RULE,
+  DEFAULT_SAVINGS_GOALS,
+} from './data/initialData';
 import {
   loadCategories,
   loadFinancialRule,
@@ -17,6 +29,17 @@ import {
   parseDateParts,
   attemptRestoreFromIndexedDB,
 } from './utils/storage';
+import { db, auth } from './firebase.js';
+import {
+  collection,
+  doc,
+  setDoc,
+  deleteDoc,
+  onSnapshot,
+  getDocFromServer,
+  writeBatch,
+} from 'firebase/firestore';
+import { signInAnonymously } from 'firebase/auth';
 import { Navbar } from './components/Navbar';
 import { Sidebar } from './components/Sidebar';
 import { Dashboard } from './components/Dashboard';
@@ -32,14 +55,48 @@ import { DeleteConfirmModal } from './components/DeleteConfirmModal';
 import { FinancialRuleModal } from './components/FinancialRuleModal';
 import { BackupRestoreModal } from './components/BackupRestoreModal';
 
+// Clean object keys to remove undefined fields which are not accepted by Firestore setDoc
+function cleanForFirestore<T extends Record<string, any>>(obj: T): T {
+  const clean: any = {};
+  for (const [key, value] of Object.entries(obj)) {
+    if (value !== undefined) {
+      clean[key] = value;
+    }
+  }
+  return clean;
+}
+
+enum OperationType {
+  CREATE = 'create',
+  UPDATE = 'update',
+  DELETE = 'delete',
+  LIST = 'list',
+  GET = 'get',
+  WRITE = 'write',
+}
+
+function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
+  const errInfo = {
+    error: error instanceof Error ? error.message : String(error),
+    authInfo: {
+      userId: auth?.currentUser?.uid,
+      email: auth?.currentUser?.email,
+    },
+    operationType,
+    path,
+  };
+  console.warn('Firestore Notice: ', JSON.stringify(errInfo));
+}
+
 export default function App() {
   const [transactions, setTransactions] = useState<Transaction[]>(() => loadTransactions());
   const [categories, setCategories] = useState<Category[]>(() => loadCategories());
   const [savingsGoals, setSavingsGoals] = useState<SavingsGoal[]>(() => loadSavingsGoals());
   const [savingsRecords, setSavingsRecords] = useState<SavingsRecord[]>(() => loadSavingsRecords());
   const [financialRule, setFinancialRule] = useState<FinancialRule>(() => loadFinancialRule());
+  const [isCloudConnected, setIsCloudConnected] = useState<boolean>(false);
 
-  // Date filtering state with localStorage memory and smart initial auto-detection
+  // Date filtering state with memory and smart initial auto-detection
   const [selectedYear, setSelectedYear] = useState<number>(() => {
     const saved = loadStoredDateFilter();
     if (saved) return saved.year;
@@ -124,7 +181,6 @@ export default function App() {
     const list: { merchant: string; categoryId: string; type: TransactionType }[] = [];
     const seen = new Set<string>();
 
-    // Scan newest first
     const sorted = [...transactions].sort((a, b) => b.createdAt - a.createdAt);
     sorted.forEach((tx) => {
       if (tx.merchant && !seen.has(tx.merchant.toLowerCase().trim())) {
@@ -140,8 +196,128 @@ export default function App() {
     return list;
   }, [transactions]);
 
-  // Attempt restore from IndexedDB if localStorage was cleared by browser or iframe
+  // Real-time Firebase Firestore Sync Listeners
   useEffect(() => {
+    // Try test connection to Firestore server
+    try {
+      getDocFromServer(doc(db, 'test', 'connection')).catch(() => {});
+    } catch {
+      // Offline or network probe
+    }
+
+    // Try signing in anonymously if available and not yet signed in
+    if (auth && !auth.currentUser) {
+      signInAnonymously(auth).catch(() => {});
+    }
+
+    // 1. Transactions Listener
+    const unsubTxs = onSnapshot(
+      collection(db, 'transactions'),
+      (snapshot) => {
+        setIsCloudConnected(true);
+        if (!snapshot.empty) {
+          const list = snapshot.docs.map((d) => d.data() as Transaction);
+          list.sort((a, b) => {
+            return (
+              new Date(b.date).getTime() - new Date(a.date).getTime() || b.createdAt - a.createdAt
+            );
+          });
+          setTransactions(list);
+          saveTransactions(list); // Keep offline backup updated
+        } else {
+          // If Firestore collection has 0 items, check if we have local transactions to migrate
+          const localTxs = loadTransactions();
+          if (localTxs.length > 0) {
+            localTxs.forEach((tx) => {
+              setDoc(doc(db, 'transactions', tx.id), cleanForFirestore(tx)).catch((err) =>
+                handleFirestoreError(err, OperationType.WRITE, `transactions/${tx.id}`)
+              );
+            });
+          }
+        }
+      },
+      (err) => handleFirestoreError(err, OperationType.LIST, 'transactions')
+    );
+
+    // 2. Categories Listener
+    const unsubCats = onSnapshot(
+      collection(db, 'categories'),
+      (snapshot) => {
+        setIsCloudConnected(true);
+        if (!snapshot.empty) {
+          const list = snapshot.docs.map((d) => d.data() as Category);
+          setCategories(list);
+          saveCategories(list);
+        } else {
+          // Firestore categories empty: seed default categories
+          const initial = loadCategories().length > 0 ? loadCategories() : DEFAULT_CATEGORIES;
+          initial.forEach((cat) => {
+            setDoc(doc(db, 'categories', cat.id), cleanForFirestore(cat)).catch((err) =>
+              handleFirestoreError(err, OperationType.WRITE, `categories/${cat.id}`)
+            );
+          });
+        }
+      },
+      (err) => handleFirestoreError(err, OperationType.LIST, 'categories')
+    );
+
+    // 3. Savings Goals Listener
+    const unsubGoals = onSnapshot(
+      collection(db, 'savingsGoals'),
+      (snapshot) => {
+        setIsCloudConnected(true);
+        if (!snapshot.empty) {
+          const list = snapshot.docs.map((d) => d.data() as SavingsGoal);
+          setSavingsGoals(list);
+          saveSavingsGoals(list);
+        } else {
+          // Firestore goals empty: seed default goals
+          const initial = loadSavingsGoals().length > 0 ? loadSavingsGoals() : DEFAULT_SAVINGS_GOALS;
+          initial.forEach((g) => {
+            setDoc(doc(db, 'savingsGoals', g.id), cleanForFirestore(g)).catch((err) =>
+              handleFirestoreError(err, OperationType.WRITE, `savingsGoals/${g.id}`)
+            );
+          });
+        }
+      },
+      (err) => handleFirestoreError(err, OperationType.LIST, 'savingsGoals')
+    );
+
+    // 4. Savings Records Listener
+    const unsubRecords = onSnapshot(
+      collection(db, 'savingsRecords'),
+      (snapshot) => {
+        setIsCloudConnected(true);
+        if (!snapshot.empty) {
+          const list = snapshot.docs.map((d) => d.data() as SavingsRecord);
+          list.sort((a, b) => b.createdAt - a.createdAt);
+          setSavingsRecords(list);
+          saveSavingsRecords(list);
+        }
+      },
+      (err) => handleFirestoreError(err, OperationType.LIST, 'savingsRecords')
+    );
+
+    // 5. Financial Rule Listener
+    const unsubRule = onSnapshot(
+      doc(db, 'settings', 'financialRule'),
+      (docSnap) => {
+        setIsCloudConnected(true);
+        if (docSnap.exists()) {
+          const rule = docSnap.data() as FinancialRule;
+          setFinancialRule(rule);
+          saveFinancialRule(rule);
+        } else {
+          const defaultRule = loadFinancialRule() || DEFAULT_FINANCIAL_RULE;
+          setDoc(doc(db, 'settings', 'financialRule'), cleanForFirestore(defaultRule)).catch((err) =>
+            handleFirestoreError(err, OperationType.WRITE, 'settings/financialRule')
+          );
+        }
+      },
+      (err) => handleFirestoreError(err, OperationType.GET, 'settings/financialRule')
+    );
+
+    // IndexedDB recovery fallback in case user is offline on first mount
     if (transactions.length === 0) {
       attemptRestoreFromIndexedDB().then((restored) => {
         if (restored && restored.transactions && restored.transactions.length > 0) {
@@ -161,6 +337,14 @@ export default function App() {
         }
       });
     }
+
+    return () => {
+      unsubTxs();
+      unsubCats();
+      unsubGoals();
+      unsubRecords();
+      unsubRule();
+    };
   }, []);
 
   const handleYearChange = (year: number) => {
@@ -186,6 +370,31 @@ export default function App() {
     setSavingsRecords(data.savingsRecords);
     setFinancialRule(data.financialRule);
 
+    saveTransactions(data.transactions);
+    saveCategories(data.categories);
+    saveSavingsGoals(data.savingsGoals);
+    saveSavingsRecords(data.savingsRecords);
+    saveFinancialRule(data.financialRule);
+
+    // Sync all restored data to Firestore
+    try {
+      data.transactions.forEach((tx) => {
+        setDoc(doc(db, 'transactions', tx.id), cleanForFirestore(tx)).catch(() => {});
+      });
+      data.categories.forEach((c) => {
+        setDoc(doc(db, 'categories', c.id), cleanForFirestore(c)).catch(() => {});
+      });
+      data.savingsGoals.forEach((g) => {
+        setDoc(doc(db, 'savingsGoals', g.id), cleanForFirestore(g)).catch(() => {});
+      });
+      data.savingsRecords.forEach((r) => {
+        setDoc(doc(db, 'savingsRecords', r.id), cleanForFirestore(r)).catch(() => {});
+      });
+      setDoc(doc(db, 'settings', 'financialRule'), cleanForFirestore(data.financialRule)).catch(() => {});
+    } catch (e) {
+      console.error('Error syncing restored data to Firestore:', e);
+    }
+
     if (data.transactions.length > 0) {
       const sorted = [...data.transactions].sort((a, b) => {
         return new Date(b.date).getTime() - new Date(a.date).getTime() || b.createdAt - a.createdAt;
@@ -199,7 +408,7 @@ export default function App() {
     }
   };
 
-  // Persistence handlers with Auto-Sync for Savings Goals
+  // Persistence handlers connected to Firebase Firestore (db)
   const handleSaveTransaction = (
     txData: Omit<Transaction, 'id' | 'createdAt'>,
     txId?: string
@@ -207,7 +416,6 @@ export default function App() {
     let updatedGoals = [...savingsGoals];
     let updatedRecords = [...savingsRecords];
 
-    // Ensure the dashboard view reflects the saved transaction's month & year so it is immediately visible
     const { year: txYear, month: txMonth } = parseDateParts(txData.date);
     if (selectedYear !== -1 && selectedYear !== txYear) {
       setSelectedYear(txYear);
@@ -222,7 +430,7 @@ export default function App() {
       // Edit existing transaction
       const existingTx = transactions.find((t) => t.id === txId);
 
-      // If existing transaction was previously linked to a savings goal, revert that previous deposit
+      // Revert previous goal deposit if existing transaction was savings
       if (existingTx && existingTx.type === 'savings' && existingTx.goalId) {
         updatedGoals = updatedGoals.map((g) =>
           g.id === existingTx.goalId
@@ -232,11 +440,24 @@ export default function App() {
         updatedRecords = updatedRecords.filter(
           (r) => r.transactionId !== txId && r.id !== existingTx.savingsRecordId
         );
+
+        // Update in Firestore
+        const prevGoal = updatedGoals.find((g) => g.id === existingTx.goalId);
+        if (prevGoal) {
+          setDoc(doc(db, 'savingsGoals', prevGoal.id), cleanForFirestore(prevGoal)).catch((err) =>
+            handleFirestoreError(err, OperationType.UPDATE, `savingsGoals/${prevGoal.id}`)
+          );
+        }
+        if (existingTx.savingsRecordId) {
+          deleteDoc(doc(db, 'savingsRecords', existingTx.savingsRecordId)).catch((err) =>
+            handleFirestoreError(err, OperationType.DELETE, `savingsRecords/${existingTx.savingsRecordId}`)
+          );
+        }
       }
 
       let newRecordId: string | undefined = undefined;
 
-      // If newly updated transaction is savings and linked to a goal, create/apply new deposit
+      // If new data is savings with a goal, create new deposit
       if (txData.type === 'savings' && txData.goalId) {
         newRecordId = `rec-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
         const newRecord: SavingsRecord = {
@@ -257,30 +478,46 @@ export default function App() {
             ? { ...g, currentAmount: g.currentAmount + txData.amount }
             : g
         );
+
+        // Save new savings record & updated goal in Firestore
+        setDoc(doc(db, 'savingsRecords', newRecord.id), cleanForFirestore(newRecord)).catch((err) =>
+          handleFirestoreError(err, OperationType.CREATE, `savingsRecords/${newRecord.id}`)
+        );
+        const targetGoal = updatedGoals.find((g) => g.id === txData.goalId);
+        if (targetGoal) {
+          setDoc(doc(db, 'savingsGoals', targetGoal.id), cleanForFirestore(targetGoal)).catch((err) =>
+            handleFirestoreError(err, OperationType.UPDATE, `savingsGoals/${targetGoal.id}`)
+          );
+        }
       }
 
-      const updated = transactions.map((t) =>
-        t.id === txId
-          ? {
-              ...t,
-              ...txData,
-              savingsRecordId: newRecordId !== undefined ? newRecordId : t.savingsRecordId,
-            }
-          : t
+      const updatedTx: Transaction = {
+        ...(existingTx || ({} as Transaction)),
+        ...txData,
+        id: txId,
+        savingsRecordId: newRecordId !== undefined ? newRecordId : existingTx?.savingsRecordId,
+        createdAt: existingTx?.createdAt || Date.now(),
+      };
+
+      const updatedList = transactions.map((t) => (t.id === txId ? updatedTx : t));
+
+      // Save to Firestore
+      setDoc(doc(db, 'transactions', txId), cleanForFirestore(updatedTx)).catch((err) =>
+        handleFirestoreError(err, OperationType.UPDATE, `transactions/${txId}`)
       );
 
-      setTransactions(updated);
-      saveTransactions(updated);
+      // Local state and backup
+      setTransactions(updatedList);
+      saveTransactions(updatedList);
       setSavingsGoals(updatedGoals);
       saveSavingsGoals(updatedGoals);
       setSavingsRecords(updatedRecords);
       saveSavingsRecords(updatedRecords);
     } else {
       // Add new transaction
-      const generatedTxId = `tx-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`;
+      const generatedTxId = `tx-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
       let newRecordId: string | undefined = undefined;
 
-      // Auto-Sync: If transaction is 'savings' and target goalId is selected
       if (txData.type === 'savings' && txData.goalId) {
         newRecordId = `rec-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
         const newRecord: SavingsRecord = {
@@ -303,6 +540,17 @@ export default function App() {
             : g
         );
 
+        // Save new savings record & updated goal in Firestore
+        setDoc(doc(db, 'savingsRecords', newRecord.id), cleanForFirestore(newRecord)).catch((err) =>
+          handleFirestoreError(err, OperationType.CREATE, `savingsRecords/${newRecord.id}`)
+        );
+        const targetGoal = updatedGoals.find((g) => g.id === txData.goalId);
+        if (targetGoal) {
+          setDoc(doc(db, 'savingsGoals', targetGoal.id), cleanForFirestore(targetGoal)).catch((err) =>
+            handleFirestoreError(err, OperationType.UPDATE, `savingsGoals/${targetGoal.id}`)
+          );
+        }
+
         setSavingsGoals(updatedGoals);
         saveSavingsGoals(updatedGoals);
         setSavingsRecords(updatedRecords);
@@ -316,9 +564,16 @@ export default function App() {
         createdAt: Date.now(),
       };
 
-      const updated = [newTx, ...transactions];
-      setTransactions(updated);
-      saveTransactions(updated);
+      const updatedList = [newTx, ...transactions];
+
+      // Save to Firestore
+      setDoc(doc(db, 'transactions', generatedTxId), cleanForFirestore(newTx)).catch((err) =>
+        handleFirestoreError(err, OperationType.CREATE, `transactions/${generatedTxId}`)
+      );
+
+      // Local state and backup
+      setTransactions(updatedList);
+      saveTransactions(updatedList);
     }
   };
 
@@ -335,7 +590,11 @@ export default function App() {
           : ''
       }`,
       onConfirm: () => {
-        // If linked savings, revert goal balance and remove linked savings record
+        // Delete from Firestore
+        deleteDoc(doc(db, 'transactions', tx.id)).catch((err) =>
+          handleFirestoreError(err, OperationType.DELETE, `transactions/${tx.id}`)
+        );
+
         if (isLinkedSavings) {
           const updatedGoals = savingsGoals.map((g) =>
             g.id === tx.goalId
@@ -345,6 +604,20 @@ export default function App() {
           const updatedRecords = savingsRecords.filter(
             (r) => r.transactionId !== tx.id && r.id !== tx.savingsRecordId
           );
+
+          // Update goal and delete record in Firestore
+          const goalToUpdate = updatedGoals.find((g) => g.id === tx.goalId);
+          if (goalToUpdate) {
+            setDoc(doc(db, 'savingsGoals', goalToUpdate.id), cleanForFirestore(goalToUpdate)).catch((err) =>
+              handleFirestoreError(err, OperationType.UPDATE, `savingsGoals/${goalToUpdate.id}`)
+            );
+          }
+          if (tx.savingsRecordId) {
+            deleteDoc(doc(db, 'savingsRecords', tx.savingsRecordId)).catch((err) =>
+              handleFirestoreError(err, OperationType.DELETE, `savingsRecords/${tx.savingsRecordId}`)
+            );
+          }
+
           setSavingsGoals(updatedGoals);
           saveSavingsGoals(updatedGoals);
           setSavingsRecords(updatedRecords);
@@ -363,15 +636,25 @@ export default function App() {
     newBudget: number,
     isHappiness?: boolean
   ) => {
-    const updated = categories.map((c) =>
-      c.id === categoryId
-        ? {
-            ...c,
-            budgetMonthly: newBudget,
-            isHappiness: isHappiness !== undefined ? isHappiness : c.isHappiness,
-          }
-        : c
-    );
+    let updatedCat: Category | null = null;
+    const updated = categories.map((c) => {
+      if (c.id === categoryId) {
+        updatedCat = {
+          ...c,
+          budgetMonthly: newBudget,
+          isHappiness: isHappiness !== undefined ? isHappiness : c.isHappiness,
+        };
+        return updatedCat;
+      }
+      return c;
+    });
+
+    if (updatedCat) {
+      setDoc(doc(db, 'categories', categoryId), cleanForFirestore(updatedCat)).catch((err) =>
+        handleFirestoreError(err, OperationType.UPDATE, `categories/${categoryId}`)
+      );
+    }
+
     setCategories(updated);
     saveCategories(updated);
   };
@@ -381,6 +664,10 @@ export default function App() {
     const updated = exists
       ? categories.map((c) => (c.id === cat.id ? cat : c))
       : [...categories, cat];
+
+    setDoc(doc(db, 'categories', cat.id), cleanForFirestore(cat)).catch((err) =>
+      handleFirestoreError(err, OperationType.WRITE, `categories/${cat.id}`)
+    );
 
     setCategories(updated);
     saveCategories(updated);
@@ -393,6 +680,10 @@ export default function App() {
       title: 'ยืนยันการลบหมวดหมู่',
       message: `คุณแน่ใจหรือไม่ว่าต้องการลบหมวดหมู่ "${cat?.name || 'หมวดหมู่นี้'}"?`,
       onConfirm: () => {
+        deleteDoc(doc(db, 'categories', categoryId)).catch((err) =>
+          handleFirestoreError(err, OperationType.DELETE, `categories/${categoryId}`)
+        );
+
         const updated = categories.filter((c) => c.id !== categoryId);
         setCategories(updated);
         saveCategories(updated);
@@ -406,6 +697,10 @@ export default function App() {
       ? savingsGoals.map((g) => (g.id === goal.id ? goal : g))
       : [...savingsGoals, goal];
 
+    setDoc(doc(db, 'savingsGoals', goal.id), cleanForFirestore(goal)).catch((err) =>
+      handleFirestoreError(err, OperationType.WRITE, `savingsGoals/${goal.id}`)
+    );
+
     setSavingsGoals(updated);
     saveSavingsGoals(updated);
   };
@@ -417,6 +712,16 @@ export default function App() {
       title: 'ยืนยันการลบกระปุกเป้าหมาย',
       message: `คุณแน่ใจหรือไม่ว่าต้องการลบเป้าหมายการออม "${g?.title || 'เป้าหมายนี้'}"? ประวัติการหยอด/ถอนทั้งหมดของกระปุกนี้จะถูกลบออกด้วย`,
       onConfirm: () => {
+        deleteDoc(doc(db, 'savingsGoals', goalId)).catch((err) =>
+          handleFirestoreError(err, OperationType.DELETE, `savingsGoals/${goalId}`)
+        );
+
+        // Delete associated records from Firestore
+        const recordsToDelete = savingsRecords.filter((r) => r.goalId === goalId);
+        recordsToDelete.forEach((r) => {
+          deleteDoc(doc(db, 'savingsRecords', r.id)).catch(() => {});
+        });
+
         const updated = savingsGoals.filter((item) => item.id !== goalId);
         const updatedRecords = savingsRecords.filter((r) => r.goalId !== goalId);
         setSavingsGoals(updated);
@@ -445,13 +750,25 @@ export default function App() {
     };
 
     const delta = recordData.type === 'deposit' ? recordData.amount : -recordData.amount;
+    let targetGoalToSave: SavingsGoal | null = null;
     const updatedGoals = savingsGoals.map((g) => {
       if (g.id === recordData.goalId) {
         const nextAmt = Math.max(0, g.currentAmount + delta);
-        return { ...g, currentAmount: nextAmt };
+        targetGoalToSave = { ...g, currentAmount: nextAmt };
+        return targetGoalToSave;
       }
       return g;
     });
+
+    // Save in Firestore
+    setDoc(doc(db, 'savingsRecords', newRecord.id), cleanForFirestore(newRecord)).catch((err) =>
+      handleFirestoreError(err, OperationType.CREATE, `savingsRecords/${newRecord.id}`)
+    );
+    if (targetGoalToSave) {
+      setDoc(doc(db, 'savingsGoals', recordData.goalId), cleanForFirestore(targetGoalToSave)).catch((err) =>
+        handleFirestoreError(err, OperationType.UPDATE, `savingsGoals/${recordData.goalId}`)
+      );
+    }
 
     const updatedRecords = [newRecord, ...savingsRecords];
     setSavingsGoals(updatedGoals);
@@ -466,14 +783,27 @@ export default function App() {
       title: 'ยืนยันการลบประวัติรายการออม',
       message: `คุณแน่ใจหรือไม่ว่าต้องการลบประวัติการ${record.type === 'deposit' ? 'หยอดเงิน' : 'ถอนเงิน'} ฿${record.amount.toLocaleString()} ${record.notes ? `("${record.notes}")` : ''}? ${revertGoalBalance ? 'ยอดเงินในกระปุกจะถูกปรับคืนให้อัตโนมัติ' : ''}`,
       onConfirm: () => {
+        deleteDoc(doc(db, 'savingsRecords', record.id)).catch((err) =>
+          handleFirestoreError(err, OperationType.DELETE, `savingsRecords/${record.id}`)
+        );
+
         if (revertGoalBalance) {
           const delta = record.type === 'deposit' ? -record.amount : record.amount;
+          let goalToUpdate: SavingsGoal | null = null;
           const updatedGoals = savingsGoals.map((g) => {
             if (g.id === record.goalId) {
-              return { ...g, currentAmount: Math.max(0, g.currentAmount + delta) };
+              goalToUpdate = { ...g, currentAmount: Math.max(0, g.currentAmount + delta) };
+              return goalToUpdate;
             }
             return g;
           });
+
+          if (goalToUpdate) {
+            setDoc(doc(db, 'savingsGoals', record.goalId), cleanForFirestore(goalToUpdate)).catch((err) =>
+              handleFirestoreError(err, OperationType.UPDATE, `savingsGoals/${record.goalId}`)
+            );
+          }
+
           setSavingsGoals(updatedGoals);
           saveSavingsGoals(updatedGoals);
         }
@@ -499,7 +829,7 @@ export default function App() {
     setDeleteModalState({
       isOpen: true,
       title: 'รีเซ็ตข้อมูลตัวอย่างทั้งหมด',
-      message: 'ต้องการกู้คืนข้อมูลรายการบันทึก งบประมาณ หมวดหมู่ และกระปุกออมเงินกลับสู่สถานะเริ่มต้นหรือไม่?',
+      message: 'ต้องการกู้คืนข้อมูลรายการบันทึก งบประมาณ หมวดหมู่ และกระปุกออมเงินกลับสู่สถานะเริ่มต้นหรือไม่? ข้อมูลบน Firebase Firestore จะถูกอัปเดตด้วย',
       onConfirm: () => {
         const res = resetAllData();
         setTransactions(res.transactions);
@@ -507,6 +837,23 @@ export default function App() {
         setSavingsGoals(res.goals);
         setSavingsRecords(res.savingsRecords);
         setFinancialRule(res.financialRule);
+
+        // Clear existing transactions & savings records in Firestore
+        transactions.forEach((tx) => {
+          deleteDoc(doc(db, 'transactions', tx.id)).catch(() => {});
+        });
+        savingsRecords.forEach((r) => {
+          deleteDoc(doc(db, 'savingsRecords', r.id)).catch(() => {});
+        });
+
+        // Set default categories, goals, and rule in Firestore
+        res.categories.forEach((cat) => {
+          setDoc(doc(db, 'categories', cat.id), cleanForFirestore(cat)).catch(() => {});
+        });
+        res.goals.forEach((g) => {
+          setDoc(doc(db, 'savingsGoals', g.id), cleanForFirestore(g)).catch(() => {});
+        });
+        setDoc(doc(db, 'settings', 'financialRule'), cleanForFirestore(res.financialRule)).catch(() => {});
       },
     });
   };
@@ -514,6 +861,10 @@ export default function App() {
   const handleSaveFinancialRule = (newRule: FinancialRule) => {
     setFinancialRule(newRule);
     saveFinancialRule(newRule);
+
+    setDoc(doc(db, 'settings', 'financialRule'), cleanForFirestore(newRule)).catch((err) =>
+      handleFirestoreError(err, OperationType.WRITE, 'settings/financialRule')
+    );
   };
 
   return (
@@ -555,6 +906,7 @@ export default function App() {
           onOpenBackup={() => setIsBackupModalOpen(true)}
           onResetData={handleResetData}
           currentNetBalance={currentNetBalance}
+          isCloudConnected={isCloudConnected}
           onToggleSidebar={() => {
             if (typeof window !== 'undefined' && window.innerWidth < 1024) {
               setIsMobileSidebarOpen((prev) => !prev);
@@ -566,86 +918,86 @@ export default function App() {
 
         {/* Main Container */}
         <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8">
-        {activeTab === 'dashboard' && (
-          <Dashboard
-            transactions={transactions}
-            categories={categories}
-            savingsGoals={savingsGoals}
-            financialRule={financialRule}
-            onOpenRuleSettings={() => setIsRuleModalOpen(true)}
-            selectedYear={selectedYear}
-            selectedMonth={selectedMonth}
-            onYearChange={handleYearChange}
-            onMonthChange={handleMonthChange}
-            onOpenQuickAdd={() => {
-              setEditingTx(null);
-              setIsTxModalOpen(true);
-            }}
-            onOpenScanner={() => setIsScannerOpen(true)}
-            onOpenVoice={() => setIsVoiceOpen(true)}
-            onEditTransaction={(tx) => {
-              setEditingTx(tx);
-              setIsTxModalOpen(true);
-            }}
-            onDeleteTransaction={handleDeleteTransaction}
-            onNavigateTab={(tab) => setActiveTab(tab)}
-          />
-        )}
+          {activeTab === 'dashboard' && (
+            <Dashboard
+              transactions={transactions}
+              categories={categories}
+              savingsGoals={savingsGoals}
+              financialRule={financialRule}
+              onOpenRuleSettings={() => setIsRuleModalOpen(true)}
+              selectedYear={selectedYear}
+              selectedMonth={selectedMonth}
+              onYearChange={handleYearChange}
+              onMonthChange={handleMonthChange}
+              onOpenQuickAdd={() => {
+                setEditingTx(null);
+                setIsTxModalOpen(true);
+              }}
+              onOpenScanner={() => setIsScannerOpen(true)}
+              onOpenVoice={() => setIsVoiceOpen(true)}
+              onEditTransaction={(tx) => {
+                setEditingTx(tx);
+                setIsTxModalOpen(true);
+              }}
+              onDeleteTransaction={handleDeleteTransaction}
+              onNavigateTab={(tab) => setActiveTab(tab)}
+            />
+          )}
 
-        {activeTab === 'transactions' && (
-          <TransactionsList
-            transactions={transactions}
-            categories={categories}
-            onAddTransaction={() => {
-              setEditingTx(null);
-              setIsTxModalOpen(true);
-            }}
-            onEditTransaction={(tx) => {
-              setEditingTx(tx);
-              setIsTxModalOpen(true);
-            }}
-            onDeleteTransaction={handleDeleteTransaction}
-            onNavigateToReports={() => setActiveTab('reports')}
-          />
-        )}
+          {activeTab === 'transactions' && (
+            <TransactionsList
+              transactions={transactions}
+              categories={categories}
+              onAddTransaction={() => {
+                setEditingTx(null);
+                setIsTxModalOpen(true);
+              }}
+              onEditTransaction={(tx) => {
+                setEditingTx(tx);
+                setIsTxModalOpen(true);
+              }}
+              onDeleteTransaction={handleDeleteTransaction}
+              onNavigateToReports={() => setActiveTab('reports')}
+            />
+          )}
 
-        {activeTab === 'budget' && (
-          <BudgetManager
-            categories={categories}
-            transactions={transactions}
-            onUpdateCategoryBudget={handleUpdateCategoryBudget}
-            selectedMonth={selectedMonth}
-            selectedYear={selectedYear}
-          />
-        )}
+          {activeTab === 'budget' && (
+            <BudgetManager
+              categories={categories}
+              transactions={transactions}
+              onUpdateCategoryBudget={handleUpdateCategoryBudget}
+              selectedMonth={selectedMonth}
+              selectedYear={selectedYear}
+            />
+          )}
 
-        {activeTab === 'goals' && (
-          <SavingsGoals
-            goals={savingsGoals}
-            records={savingsRecords}
-            onSaveGoal={handleSaveGoal}
-            onDeleteGoal={handleDeleteGoal}
-            onAddRecord={handleAddSavingsRecord}
-            onDeleteRecord={handleDeleteSavingsRecord}
-          />
-        )}
+          {activeTab === 'goals' && (
+            <SavingsGoals
+              goals={savingsGoals}
+              records={savingsRecords}
+              onSaveGoal={handleSaveGoal}
+              onDeleteGoal={handleDeleteGoal}
+              onAddRecord={handleAddSavingsRecord}
+              onDeleteRecord={handleDeleteSavingsRecord}
+            />
+          )}
 
-        {activeTab === 'categories' && (
-          <CategoriesManager
-            categories={categories}
-            onSaveCategory={handleSaveCategory}
-            onDeleteCategory={handleDeleteCategory}
-          />
-        )}
+          {activeTab === 'categories' && (
+            <CategoriesManager
+              categories={categories}
+              onSaveCategory={handleSaveCategory}
+              onDeleteCategory={handleDeleteCategory}
+            />
+          )}
 
-        {activeTab === 'reports' && (
-          <ReportsExport
-            transactions={transactions}
-            categories={categories}
-            onOpenBackup={() => setIsBackupModalOpen(true)}
-          />
-        )}
-      </main>
+          {activeTab === 'reports' && (
+            <ReportsExport
+              transactions={transactions}
+              categories={categories}
+              onOpenBackup={() => setIsBackupModalOpen(true)}
+            />
+          )}
+        </main>
       </div>
 
       {/* Quick Add / Edit Transaction Modal */}

@@ -1,0 +1,24 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Expense Tracker collections
+    match /transactions/{txId} {
+      allow read, write: if true;
+    }
+    match /categories/{catId} {
+      allow read, write: if true;
+    }
+    match /savingsGoals/{goalId} {
+      allow read, write: if true;
+    }
+    match /savingsRecords/{recId} {
+      allow read, write: if true;
+    }
+    match /settings/{settingId} {
+      allow read, write: if true;
+    }
+    match /test/{docId} {
+      allow read, write: if true;
+    }
+  }
+}
