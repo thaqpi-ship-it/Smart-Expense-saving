@@ -1,24 +1,19 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Expense Tracker collections
-    match /transactions/{txId} {
-      allow read, write: if true;
+    // Strict User-Specific Isolation
+    // Each user can ONLY read and write documents inside their own /users/{userId} document and subcollections
+    match /users/{userId} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+      
+      match /{allChildren=**} {
+        allow read, write: if request.auth != null && request.auth.uid == userId;
+      }
     }
-    match /categories/{catId} {
-      allow read, write: if true;
-    }
-    match /savingsGoals/{goalId} {
-      allow read, write: if true;
-    }
-    match /savingsRecords/{recId} {
-      allow read, write: if true;
-    }
-    match /settings/{settingId} {
-      allow read, write: if true;
-    }
-    match /test/{docId} {
-      allow read, write: if true;
+
+    // Default deny for anything outside /users/{userId}
+    match /{document=**} {
+      allow read, write: if false;
     }
   }
 }

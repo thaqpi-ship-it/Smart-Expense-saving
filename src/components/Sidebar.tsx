@@ -14,6 +14,7 @@ import {
   X,
   Sliders,
   Database,
+  LogOut,
 } from 'lucide-react';
 
 interface SidebarProps {
@@ -31,6 +32,8 @@ interface SidebarProps {
   onToggleCollapse: () => void;
   isMobileOpen: boolean;
   onCloseMobile: () => void;
+  user?: { uid: string; email?: string | null; displayName?: string | null; photoURL?: string | null } | null;
+  onLogout?: () => void;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -45,6 +48,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onToggleCollapse,
   isMobileOpen,
   onCloseMobile,
+  user,
+  onLogout,
 }) => {
   const navItems = [
     {
@@ -258,6 +263,20 @@ export const Sidebar: React.FC<SidebarProps> = ({
             </span>
             <span className="font-mono text-emerald-400">v2.5</span>
           </div>
+        )}
+
+        {onLogout && (
+          <button
+            id="sidebar-logout-btn"
+            onClick={onLogout}
+            className="w-full py-2 px-2.5 bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/30 text-rose-300 hover:text-rose-200 rounded-xl text-xs font-bold flex items-center justify-center gap-2 transition-all shadow-sm active:scale-95"
+            title={`ออกจากระบบ (${user?.email || ''})`}
+          >
+            <LogOut className="w-3.5 h-3.5 text-rose-400 shrink-0" />
+            {(!isCollapsed || isMobileOpen) && (
+              <span className="truncate">ออกจากระบบ {user?.email ? `(${user.email.split('@')[0]})` : ''}</span>
+            )}
+          </button>
         )}
 
         <button

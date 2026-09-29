@@ -2,6 +2,7 @@ export type TransactionType = 'expense' | 'income' | 'savings';
 
 export interface Category {
   id: string;
+  userId?: string;
   name: string;
   type: TransactionType;
   icon: string; // Lucide icon name
@@ -12,6 +13,7 @@ export interface Category {
 
 export interface Transaction {
   id: string;
+  userId?: string;
   date: string; // YYYY-MM-DD
   amount: number;
   categoryId: string;
@@ -25,6 +27,7 @@ export interface Transaction {
 
 export interface SavingsGoal {
   id: string;
+  userId?: string;
   title: string;
   targetAmount: number;
   currentAmount: number;
@@ -36,6 +39,7 @@ export interface SavingsGoal {
 
 export interface SavingsRecord {
   id: string;
+  userId?: string;
   goalId: string;
   type: 'deposit' | 'withdraw';
   amount: number;
@@ -63,6 +67,7 @@ export interface AIReceiptData {
 }
 
 export interface FinancialRule {
+  userId?: string;
   needsPercent: number; // e.g. 50 (รายจ่ายจำเป็น)
   wantsPercent: number; // e.g. 30 (รายจ่ายเพื่อความสุข/ไลฟ์สไตล์)
   savingsPercent: number; // e.g. 20 (เงินออม & ลงทุน)

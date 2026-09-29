@@ -2,10 +2,11 @@
   "entities": {
     "Transaction": {
       "title": "Transaction",
-      "description": "Financial income, expense, or savings transaction",
+      "description": "User financial income, expense, or savings transaction",
       "type": "object",
       "properties": {
         "id": { "type": "string" },
+        "userId": { "type": "string" },
         "date": { "type": "string" },
         "amount": { "type": "number" },
         "categoryId": { "type": "string" },
@@ -16,14 +17,15 @@
         "savingsRecordId": { "type": "string" },
         "createdAt": { "type": "number" }
       },
-      "required": ["id", "date", "amount", "categoryId", "type", "createdAt"]
+      "required": ["id", "userId", "date", "amount", "categoryId", "type", "createdAt"]
     },
     "Category": {
       "title": "Category",
-      "description": "Budget category for expenses, income, or savings",
+      "description": "User budget category for expenses, income, or savings",
       "type": "object",
       "properties": {
         "id": { "type": "string" },
+        "userId": { "type": "string" },
         "name": { "type": "string" },
         "type": { "type": "string", "enum": ["expense", "income", "savings"] },
         "icon": { "type": "string" },
@@ -31,14 +33,15 @@
         "isHappiness": { "type": "boolean" },
         "budgetMonthly": { "type": "number" }
       },
-      "required": ["id", "name", "type", "icon", "color"]
+      "required": ["id", "userId", "name", "type", "icon", "color"]
     },
     "SavingsGoal": {
       "title": "SavingsGoal",
-      "description": "Savings target piggybank goal",
+      "description": "User savings target piggybank goal",
       "type": "object",
       "properties": {
         "id": { "type": "string" },
+        "userId": { "type": "string" },
         "title": { "type": "string" },
         "targetAmount": { "type": "number" },
         "currentAmount": { "type": "number" },
@@ -47,14 +50,15 @@
         "color": { "type": "string" },
         "notes": { "type": "string" }
       },
-      "required": ["id", "title", "targetAmount", "currentAmount", "icon", "color"]
+      "required": ["id", "userId", "title", "targetAmount", "currentAmount", "icon", "color"]
     },
     "SavingsRecord": {
       "title": "SavingsRecord",
-      "description": "Savings deposit or withdrawal log",
+      "description": "User savings deposit or withdrawal log",
       "type": "object",
       "properties": {
         "id": { "type": "string" },
+        "userId": { "type": "string" },
         "goalId": { "type": "string" },
         "type": { "type": "string", "enum": ["deposit", "withdraw"] },
         "amount": { "type": "number" },
@@ -63,13 +67,14 @@
         "transactionId": { "type": "string" },
         "createdAt": { "type": "number" }
       },
-      "required": ["id", "goalId", "type", "amount", "date", "createdAt"]
+      "required": ["id", "userId", "goalId", "type", "amount", "date", "createdAt"]
     },
     "FinancialRule": {
       "title": "FinancialRule",
       "description": "50/30/20 or custom financial allocation rule",
       "type": "object",
       "properties": {
+        "userId": { "type": "string" },
         "needsPercent": { "type": "number" },
         "wantsPercent": { "type": "number" },
         "savingsPercent": { "type": "number" },
@@ -79,25 +84,25 @@
     }
   },
   "firestore": {
-    "/transactions/{txId}": {
+    "/users/{userId}/transactions/{txId}": {
       "schema": "Transaction",
-      "description": "User transactions"
+      "description": "Isolated transactions per authenticated user"
     },
-    "/categories/{catId}": {
+    "/users/{userId}/categories/{catId}": {
       "schema": "Category",
-      "description": "User budget and tracking categories"
+      "description": "Isolated budget categories per authenticated user"
     },
-    "/savingsGoals/{goalId}": {
+    "/users/{userId}/savingsGoals/{goalId}": {
       "schema": "SavingsGoal",
-      "description": "User savings goals"
+      "description": "Isolated savings goals per authenticated user"
     },
-    "/savingsRecords/{recId}": {
+    "/users/{userId}/savingsRecords/{recId}": {
       "schema": "SavingsRecord",
-      "description": "User savings deposit and withdrawal log"
+      "description": "Isolated savings records per authenticated user"
     },
-    "/settings/{settingId}": {
+    "/users/{userId}/settings/{settingId}": {
       "schema": "FinancialRule",
-      "description": "Application settings including financial rules"
+      "description": "Isolated financial rules and user settings"
     }
   }
 }

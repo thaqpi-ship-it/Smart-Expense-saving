@@ -14,6 +14,7 @@ import {
   Menu,
   Sliders,
   Database,
+  LogOut,
 } from 'lucide-react';
 
 interface NavbarProps {
@@ -28,6 +29,8 @@ interface NavbarProps {
   currentNetBalance: number;
   onToggleSidebar?: () => void;
   isCloudConnected?: boolean;
+  user?: { uid: string; email?: string | null; displayName?: string | null; photoURL?: string | null } | null;
+  onLogout?: () => void;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
@@ -42,6 +45,8 @@ export const Navbar: React.FC<NavbarProps> = ({
   currentNetBalance,
   onToggleSidebar,
   isCloudConnected,
+  user,
+  onLogout,
 }) => {
   const navTabs = [
     { id: 'dashboard', label: 'ภาพรวม', icon: LayoutDashboard },
@@ -189,6 +194,41 @@ export const Navbar: React.FC<NavbarProps> = ({
             >
               <RotateCcw className="w-4 h-4" />
             </button>
+
+            {/* User Profile & Logout Button */}
+            {onLogout && (
+              <div className="flex items-center gap-2 pl-2 border-l border-[#2e3747]">
+                <div
+                  className="hidden sm:flex items-center gap-2 max-w-[140px] truncate"
+                  title={user?.email || 'บัญชีผู้ใช้'}
+                >
+                  {user?.photoURL ? (
+                    <img
+                      src={user.photoURL}
+                      alt={user.displayName || user.email || 'User'}
+                      className="w-7 h-7 rounded-full border border-emerald-500/40 object-cover shrink-0"
+                    />
+                  ) : (
+                    <div className="w-7 h-7 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 flex items-center justify-center text-xs font-bold shrink-0">
+                      {(user?.displayName || user?.email || 'U')[0].toUpperCase()}
+                    </div>
+                  )}
+                  <span className="text-xs font-semibold text-slate-200 truncate">
+                    {user?.displayName || (user?.email ? user.email.split('@')[0] : 'ผู้ใช้งาน')}
+                  </span>
+                </div>
+
+                <button
+                  id="nav-logout-btn"
+                  onClick={onLogout}
+                  className="px-2.5 py-1.5 sm:px-3 sm:py-2 bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 hover:text-rose-200 border border-rose-500/30 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all shadow-sm active:scale-95"
+                  title={`ออกจากระบบ (${user?.email || ''})`}
+                >
+                  <LogOut className="w-3.5 h-3.5" />
+                  <span className="hidden sm:inline">ออกจากระบบ</span>
+                </button>
+              </div>
+            )}
           </div>
         </div>
 
