@@ -31,6 +31,7 @@ interface NavbarProps {
   isCloudConnected?: boolean;
   user?: { uid: string; email?: string | null; displayName?: string | null; photoURL?: string | null } | null;
   onLogout?: () => void;
+  onOpenCloudStatus?: () => void;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
@@ -47,6 +48,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   isCloudConnected,
   user,
   onLogout,
+  onOpenCloudStatus,
 }) => {
   const navTabs = [
     { id: 'dashboard', label: 'ภาพรวม', icon: LayoutDashboard },
@@ -92,12 +94,23 @@ export const Navbar: React.FC<NavbarProps> = ({
                 </span>
                 <span className="text-slate-500">•</span>
                 {isCloudConnected ? (
-                  <span className="inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+                  <button
+                    onClick={onOpenCloudStatus}
+                    className="inline-flex items-center gap-1.5 text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/30 transition-all cursor-pointer shadow-sm active:scale-95"
+                    title="คลิกเพื่อดูสถานะการซิงก์ข้ามเครื่อง (Multi-Device Cloud Status)"
+                  >
                     <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
                     <span>Firebase Cloud (db)</span>
-                  </span>
+                  </button>
                 ) : (
-                  <span className="text-slate-400">ธีม Dark Gray & Mint Green</span>
+                  <button
+                    onClick={onOpenCloudStatus}
+                    className="inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/30 transition-all cursor-pointer"
+                    title="คลิกเพื่อตรวจสอบการเชื่อมต่อ Cloud"
+                  >
+                    <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
+                    <span>กำลังเชื่อมต่อ Cloud...</span>
+                  </button>
                 )}
               </div>
             </div>

@@ -163,14 +163,13 @@ export function loadSavingsGoals(): SavingsGoal[] {
   try {
     const data = localStorage.getItem(STORAGE_KEYS.SAVINGS_GOALS);
     if (!data) {
-      saveSavingsGoals(DEFAULT_SAVINGS_GOALS);
-      return DEFAULT_SAVINGS_GOALS;
+      return [];
     }
     const parsed = JSON.parse(data);
-    return Array.isArray(parsed) && parsed.length > 0 ? parsed : DEFAULT_SAVINGS_GOALS;
+    return Array.isArray(parsed) ? parsed : [];
   } catch (e) {
     console.error('Failed to load savings goals:', e);
-    return DEFAULT_SAVINGS_GOALS;
+    return [];
   }
 }
 
@@ -379,7 +378,27 @@ export function importBackupJSON(jsonString: string): {
   }
 }
 
-// --- Reset Data ---
+// --- Reset Data & Deep Cache Purge ---
+export async function clearAllLocalAndBackupData(): Promise<void> {
+  try {
+    Object.values(STORAGE_KEYS).forEach((k) => localStorage.removeItem(k));
+    localStorage.removeItem('smart_tracker_transactions_th_v2');
+    localStorage.removeItem('smart_tracker_savings_records_th_v2');
+    localStorage.removeItem('smart_tracker_savings_th_v2');
+    localStorage.removeItem('smart_tracker_categories_th_v2');
+  } catch {}
+
+  try {
+    const db = await openIndexedDB();
+    const tx = db.transaction(IDB_STORE, 'readwrite');
+    tx.objectStore(IDB_STORE).clear();
+    await new Promise<void>((resolve) => {
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => resolve();
+    });
+  } catch {}
+}
+
 export function resetAllData(): {
   transactions: Transaction[];
   categories: Category[];
@@ -387,24 +406,28 @@ export function resetAllData(): {
   savingsRecords: SavingsRecord[];
   financialRule: FinancialRule;
 } {
-  saveTransactions(INITIAL_TRANSACTIONS);
-  saveCategories(DEFAULT_CATEGORIES);
-  saveSavingsGoals(DEFAULT_SAVINGS_GOALS);
-  saveSavingsRecords(INITIAL_SAVINGS_RECORDS);
-  saveFinancialRule(DEFAULT_FINANCIAL_RULE);
-
-  // Clear legacy keys
   try {
+    Object.values(STORAGE_KEYS).forEach((k) => localStorage.removeItem(k));
     localStorage.removeItem('smart_tracker_transactions_th_v2');
     localStorage.removeItem('smart_tracker_savings_records_th_v2');
     localStorage.removeItem('smart_tracker_savings_th_v2');
+    localStorage.removeItem('smart_tracker_categories_th_v2');
+  } catch {}
+
+  try {
+    openIndexedDB()
+      .then((db) => {
+        const tx = db.transaction(IDB_STORE, 'readwrite');
+        tx.objectStore(IDB_STORE).clear();
+      })
+      .catch(() => {});
   } catch {}
 
   return {
-    transactions: INITIAL_TRANSACTIONS,
+    transactions: [],
     categories: DEFAULT_CATEGORIES,
-    goals: DEFAULT_SAVINGS_GOALS,
-    savingsRecords: INITIAL_SAVINGS_RECORDS,
+    goals: [],
+    savingsRecords: [],
     financialRule: DEFAULT_FINANCIAL_RULE,
   };
 }

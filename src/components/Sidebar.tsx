@@ -15,6 +15,7 @@ import {
   Sliders,
   Database,
   LogOut,
+  Cloud,
 } from 'lucide-react';
 
 interface SidebarProps {
@@ -34,6 +35,7 @@ interface SidebarProps {
   onCloseMobile: () => void;
   user?: { uid: string; email?: string | null; displayName?: string | null; photoURL?: string | null } | null;
   onLogout?: () => void;
+  onOpenCloudStatus?: () => void;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -50,6 +52,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onCloseMobile,
   user,
   onLogout,
+  onOpenCloudStatus,
 }) => {
   const navItems = [
     {
@@ -241,6 +244,18 @@ export const Sidebar: React.FC<SidebarProps> = ({
           >
             <Sliders className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
             {(!isCollapsed || isMobileOpen) && <span>ตั้งค่าเกณฑ์ออม</span>}
+          </button>
+        )}
+
+        {onOpenCloudStatus && (
+          <button
+            id="sidebar-cloud-status-btn"
+            onClick={onOpenCloudStatus}
+            className="w-full py-2 px-2.5 bg-[#172230] hover:bg-[#1f2e42] border border-emerald-500/30 text-emerald-300 rounded-xl text-xs font-semibold flex items-center justify-center gap-2 transition-all shadow-sm"
+            title="ตรวจสอบสถานะการซิงก์ข้อมูลข้ามเครื่อง (Multi-Device Cloud Sync)"
+          >
+            <Cloud className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+            {(!isCollapsed || isMobileOpen) && <span>สถานะ Cloud Sync</span>}
           </button>
         )}
 
